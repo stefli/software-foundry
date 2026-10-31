@@ -63,30 +63,31 @@ impl HarnessLoop {
             self.fsm.transition(TransitionEvent::CodeGenerated);
             info!("State: {:?}, generating code/patches...", self.fsm.current_state);
 
-            // 写入一个示例验证脚本进行沙箱联通性测试
+            // 写入根据 Issue 动态生成的验证脚本进行沙箱联通性与持久化验证
             let smoke_test_script = sandbox.root_dir.join("smoke_test.py");
-            tokio::fs::write(
-                &smoke_test_script,
-                r#"
-import os
+            let safe_title = issue.title.replace('"', "\\\"");
+            let dynamic_script = format!(
+                r#"import os
 import sqlite3
 
-print("Running Foundry Sandbox Smoke Test...")
+print("Running Foundry Sandbox Smoke Test for Issue: \"{safe_title}\"")
 db_path = os.environ.get("SQLITE_DATABASE_PATH", "test.db")
-print(f"Connecting to isolated SQLite DB at: {db_path}")
+print(f"Connecting to isolated SQLite DB at: {{db_path}}")
 
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, content TEXT);")
-cursor.execute("INSERT INTO notes (content) VALUES ('Foundry self-test entry');")
+cursor.execute("CREATE TABLE IF NOT EXISTS runtime_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_ref TEXT, audit_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+cursor.execute("INSERT INTO runtime_audit (issue_ref) VALUES (?);", ("{safe_title}",))
 conn.commit()
 
-cursor.execute("SELECT COUNT(*) FROM notes;")
+cursor.execute("SELECT COUNT(*) FROM runtime_audit;")
 count = cursor.fetchone()[0]
-print(f"SQLite verification success! Note count: {count}")
+print(f"SQLite sandbox dynamic audit verification success! Audit record count: {{count}}")
 conn.close()
 "#,
-            ).await?;
+                safe_title = safe_title
+            );
+            tokio::fs::write(&smoke_test_script, dynamic_script).await?;
 
             // 5. Verifying in Sandbox
             info!("State: {:?}, executing sandbox tests...", self.fsm.current_state);

@@ -81,7 +81,7 @@ impl RequirementsAgent {
         let _ = stream_sender.send("🔍 正在推导核心业务实体、架构选型与多文件结构...\n".to_string()).await;
 
         let raw_response = self.client.call_gemini_raw(&prompt).await
-            .context("调用需求架构师 Agent 失败")?;
+            .context("调用需求架构师 Agent 失败，请检查网络或大模型配置")?;
 
         // 鲁棒的 JSON 提取器：从文本中提取出第一个 { 与 最后一个 }
         let start_idx = raw_response.find('{');
@@ -93,73 +93,12 @@ impl RequirementsAgent {
 
             match serde_json::from_str::<ProjectSpecDecomposition>(json_candidate) {
                 Ok(s) => (s, prefix_text),
-                Err(_) => {
-                    let (rec_stack, rec_rationale) = StackRegistry::recommend_stack_for_idea(user_idea);
-                    let fallback = ProjectSpecDecomposition {
-                        thought_process: raw_response.clone(),
-                        system_title: "智能业务管理系统".to_string(),
-                        positioning: "专为轻量业务打造的离线单机与现代数据管理软件".to_string(),
-                        recommended_stack: rec_stack,
-                        stack_rationale: rec_rationale,
-                        modules: vec![
-                            foundry_proto::DecomposedModule {
-                                name: "核心档案与数据维护".to_string(),
-                                desc: "录入业务基础资料与分类标签".to_string(),
-                                priority: "P0".to_string(),
-                            },
-                            foundry_proto::DecomposedModule {
-                                name: "明细流水与状态追踪".to_string(),
-                                desc: "登记变动记录，实时统计当前状态".to_string(),
-                                priority: "P0".to_string(),
-                            },
-                            foundry_proto::DecomposedModule {
-                                name: "智能告警与标色提醒".to_string(),
-                                desc: "异常或临界值自动高亮突出展示".to_string(),
-                                priority: "P1".to_string(),
-                            },
-                        ],
-                        db_tables: vec![
-                            foundry_proto::DecomposedTable {
-                                table_name: "records".to_string(),
-                                description: "核心数据记录表".to_string(),
-                                fields: vec!["id INTEGER PRIMARY KEY".to_string(), "title TEXT".to_string(), "status TEXT".to_string()],
-                            },
-                        ],
-                        advice: "采用分层多文件工程结构，数据本地安全持久化。".to_string(),
-                    };
-                    (fallback, prefix_text)
+                Err(e) => {
+                    anyhow::bail!("大模型返回内容未能解析为有效需求 JSON 规约: {}，原始内容: {}", e, json_candidate);
                 }
             }
         } else {
-            let (rec_stack, rec_rationale) = StackRegistry::recommend_stack_for_idea(user_idea);
-            let fallback = ProjectSpecDecomposition {
-                thought_process: raw_response.clone(),
-                system_title: "智能业务管理系统".to_string(),
-                positioning: "专为轻量业务打造的离线单机与现代数据管理软件".to_string(),
-                recommended_stack: rec_stack,
-                stack_rationale: rec_rationale,
-                modules: vec![
-                    foundry_proto::DecomposedModule {
-                        name: "核心档案与数据维护".to_string(),
-                        desc: "录入业务基础资料与分类标签".to_string(),
-                        priority: "P0".to_string(),
-                    },
-                    foundry_proto::DecomposedModule {
-                        name: "明细流水与状态追踪".to_string(),
-                        desc: "登记变动记录，实时统计当前状态".to_string(),
-                        priority: "P0".to_string(),
-                    },
-                ],
-                db_tables: vec![
-                    foundry_proto::DecomposedTable {
-                        table_name: "records".to_string(),
-                        description: "核心数据记录表".to_string(),
-                        fields: vec!["id INTEGER PRIMARY KEY".to_string(), "title TEXT".to_string(), "status TEXT".to_string()],
-                    },
-                ],
-                advice: "采用分层多文件工程结构，数据本地安全持久化。".to_string(),
-            };
-            (fallback, String::new())
+            anyhow::bail!("大模型未返回有效的结构化需求规范，请检查模型响应: {}", raw_response);
         };
 
         // 若大模型未填写推荐体系或理由，由规则中枢自动补偿

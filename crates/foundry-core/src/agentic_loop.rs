@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::process::CommandExt as _;
 
 use crate::gemini_client::GeminiClient;
 

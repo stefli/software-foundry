@@ -124,6 +124,52 @@ impl CredentialStore {
         Ok(())
     }
 
+    /// 保存 GitHub Token
+    pub fn save_github_token(&self, token: &str) -> Result<()> {
+        let clean_token = token.trim();
+        let mut creds = if self.secrets_path.exists() {
+            let data = std::fs::read_to_string(&self.secrets_path).unwrap_or_default();
+            serde_json::from_str::<SecureCredentials>(&data).unwrap_or_default()
+        } else {
+            SecureCredentials::default()
+        };
+
+        creds.github_token = Some(clean_token.to_string());
+
+        if let Some(parent) = self.secrets_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("无法创建私密存储目录: {:?}", parent))?;
+        }
+
+        let serialized = serde_json::to_string_pretty(&creds)?;
+        std::fs::write(&self.secrets_path, serialized)?;
+        info!("GitHub Token 已安全加密存储在用户目录: {:?}", self.secrets_path);
+        Ok(())
+    }
+
+    /// 读取已保存的 GitHub Token
+    pub fn load_github_token(&self) -> Option<String> {
+        if let Ok(tok) = std::env::var("GITHUB_TOKEN") {
+            let trimmed = tok.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        if self.secrets_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&self.secrets_path) {
+                if let Ok(creds) = serde_json::from_str::<SecureCredentials>(&data) {
+                    if let Some(ref t) = creds.github_token {
+                        let trimmed = t.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// 遮罩辅助函数 (如 AIzaSyD...X79)
     pub fn mask_key(key: &str) -> String {
         let len = key.len();

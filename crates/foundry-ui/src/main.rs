@@ -12,7 +12,7 @@ use foundry_core::credential_store::CredentialStore;
 use foundry_core::lifecycle_subagents::{MockupDesignerAgent, TestPlannerAgent};
 use foundry_core::requirements_agent::RequirementsAgent;
 use foundry_proto::{
-    AgentLoopStep, DecomposedModule, DecomposedTable, DesignTheme, LlmConfig, MockupDesignArtifact,
+    AgentLoopStep, DesignTheme, LlmConfig, MockupDesignArtifact,
     PipelineState, ProjectSpecDecomposition, SourceFile, TargetStack, TestPlanArtifact,
 };
 
@@ -328,44 +328,27 @@ impl SoftwareFoundryApp {
         if self.is_busy {
             return;
         }
-        self.is_busy = true;
-        self.pipeline_state = PipelineState::Coding;
-        self.agent_steps.clear();
 
         let cur_prj = &self.projects[self.active_project_idx];
         let prj_id = cur_prj.id.clone();
         let stack = cur_prj.target_stack;
         let theme = cur_prj.theme.clone();
-        let spec = cur_prj.spec.clone().unwrap_or_else(|| ProjectSpecDecomposition {
-            thought_process: String::new(),
-            system_title: cur_prj.name.clone(),
-            positioning: cur_prj.idea.clone(),
-            modules: vec![
-                DecomposedModule {
-                    name: "核心数据与档案管理".to_string(),
-                    desc: "负责本地持久化与数据存取".to_string(),
-                    priority: "P0".to_string(),
-                },
-                DecomposedModule {
-                    name: "状态追踪与搜索看板".to_string(),
-                    desc: "支持关键字快速检索与高亮过滤".to_string(),
-                    priority: "P0".to_string(),
-                },
-            ],
-            db_tables: vec![DecomposedTable {
-                table_name: "records".to_string(),
-                description: "核心业务明细".to_string(),
-                fields: vec![
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT".to_string(),
-                    "title TEXT NOT NULL".to_string(),
-                    "category TEXT DEFAULT '核心'".to_string(),
-                    "status TEXT DEFAULT '正常'".to_string(),
-                ],
-            }],
-            advice: String::new(),
-            recommended_stack: stack,
-            stack_rationale: String::new(),
-        });
+
+        // 严格门禁校验：严禁使用伪造/写死的默认数据，必须依赖真实冻结的需求规约
+        let spec = match &cur_prj.spec {
+            Some(s) => s.clone(),
+            None => {
+                let err_msg = "尚未完成阶段 1 业务需求分析与规约冻结！请先在下方输入您的真实业务需求并确认需求规约后再启动制造，严禁脱离真实业务盲目生成。".to_string();
+                let prj = &mut self.projects[self.active_project_idx];
+                prj.chat_log.push(("系统".to_string(), format!("⚠️ {}", err_msg)));
+                self.pipeline_state = PipelineState::Pending;
+                return;
+            }
+        };
+
+        self.is_busy = true;
+        self.pipeline_state = PipelineState::Coding;
+        self.agent_steps.clear();
 
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let sandbox_dir = current_dir.join("foundry_workspace").join("sandbox").join(&prj_id);

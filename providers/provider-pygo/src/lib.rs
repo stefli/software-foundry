@@ -1,18 +1,79 @@
-use foundry_proto::{DesignTheme, ProjectSpecDecomposition, SandboxExecutionSpec, SourceFile, TargetStack};
+use foundry_proto::{DecomposedTable, DesignTheme, ProjectSpecDecomposition, SandboxExecutionSpec, SourceFile, TargetStack};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// 辅助函数：根据需求规约中的数据表与模块，动态生成 SQLite 建表与初始记录语句
+/// 辅助数据结构：从 SQL 字段定义字符串解析字段名与类型
+#[derive(Debug, Clone)]
+struct ParsedField {
+    name: String,
+    col_type: String, // "INTEGER", "TEXT", "REAL"
+    is_pk: bool,
+}
+
+impl ParsedField {
+    fn from_field_def(field_str: &str) -> Self {
+        let parts: Vec<&str> = field_str.trim().split_whitespace().collect();
+        let name = parts.first().copied().unwrap_or("col").trim_matches('`').trim_matches('"').to_string();
+        let upper = field_str.to_uppercase();
+        let is_pk = upper.contains("PRIMARY KEY");
+        let col_type = if upper.contains("INT") {
+            "INTEGER".to_string()
+        } else if upper.contains("REAL") || upper.contains("FLOAT") || upper.contains("DOUBLE") || upper.contains("NUMERIC") {
+            "REAL".to_string()
+        } else {
+            "TEXT".to_string()
+        };
+
+        Self { name, col_type, is_pk }
+    }
+}
+
+/// 获取用户定义的主业务表（若无则依据模块构建对应的主业务表，绝不写死图书/借阅/records）
+fn get_primary_table(spec: &ProjectSpecDecomposition) -> DecomposedTable {
+    if let Some(t) = spec.db_tables.first() {
+        return t.clone();
+    }
+
+    // 若大模型未返回具体表，按需求模块名称与系统标题动态推导主业务表，严禁写死 records
+    let clean_title = spec.system_title.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+    let table_name = if clean_title.is_empty() { "items".to_string() } else { clean_title.to_lowercase() };
+
+    DecomposedTable {
+        table_name,
+        description: format!("{} 核心业务表", spec.system_title),
+        fields: vec![
+            "id INTEGER PRIMARY KEY AUTOINCREMENT".to_string(),
+            "title TEXT NOT NULL".to_string(),
+            "category TEXT".to_string(),
+            "status TEXT".to_string(),
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP".to_string(),
+        ],
+    }
+}
+
+/// 获取动态的分类/模块候选值（100% 取自用户规约的 modules）
+fn get_category_options(spec: &ProjectSpecDecomposition) -> Vec<String> {
+    if spec.modules.is_empty() {
+        vec!["核心业务".to_string(), "综合管理".to_string()]
+    } else {
+        spec.modules.iter().map(|m| m.name.clone()).collect()
+    }
+}
+
+/// 辅助函数：根据需求规约中的所有数据表，纯动态生成 Python SQLite 建表与初始化语句
 fn generate_python_db_init(spec: &ProjectSpecDecomposition) -> String {
     let mut sql_stmts = String::new();
+    let primary = get_primary_table(spec);
 
-    for table in &spec.db_tables {
+    let mut tables = spec.db_tables.clone();
+    if tables.is_empty() {
+        tables.push(primary);
+    }
+
+    for table in &tables {
         let clean_table = table.table_name.trim();
-        if clean_table.eq_ignore_ascii_case("records") {
-            continue;
-        }
         let fields_sql = if table.fields.is_empty() {
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP".to_string()
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP".to_string()
         } else {
             table.fields.join(", ")
         };
@@ -25,20 +86,6 @@ fn generate_python_db_init(spec: &ProjectSpecDecomposition) -> String {
             clean_table, fields_sql
         ));
     }
-
-    // 统一且标准的基础 records 表
-    sql_stmts.push_str(
-        r#"    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        category TEXT DEFAULT '核心业务',
-        status TEXT DEFAULT '正常',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-    cursor.execute("INSERT OR IGNORE INTO records (id, title, category, status) VALUES (1, '系统初始化运行校验条目', '系统自检', '已就绪');")
-"#);
 
     sql_stmts
 }
@@ -56,7 +103,7 @@ pub trait TechStackProvider: Send + Sync {
 }
 
 // =========================================================================
-// 1. Python 体系提供者 (PythonStackProvider)
+// 1. Python 体系提供者 (PythonStackProvider) - 100% 动态字段与实体驱动
 // =========================================================================
 pub struct PythonStackProvider;
 
@@ -81,6 +128,18 @@ impl TechStackProvider for PythonStackProvider {
         let title = if spec.system_title.is_empty() { "FoundryApp" } else { &spec.system_title };
         let positioning = if spec.positioning.is_empty() { "专为轻量业务打造的智能桌面系统" } else { &spec.positioning };
         let theme_hex = theme.hex_color();
+
+        let primary_table = get_primary_table(spec);
+        let table_name = &primary_table.table_name;
+        let parsed_fields: Vec<ParsedField> = primary_table.fields.iter().map(|f| ParsedField::from_field_def(f)).collect();
+
+        // 识别主键和非主键可录入字段
+        let non_pk_fields: Vec<&ParsedField> = parsed_fields.iter().filter(|f| !f.is_pk && !f.name.eq_ignore_ascii_case("created_at") && !f.name.eq_ignore_ascii_case("id")).collect();
+        let display_fields: Vec<&ParsedField> = if parsed_fields.is_empty() {
+            vec![]
+        } else {
+            parsed_fields.iter().collect()
+        };
 
         let mut files = Vec::new();
         let db_table_stmts = generate_python_db_init(spec);
@@ -120,21 +179,37 @@ if __name__ == "__main__":
             language: "python".to_string(),
         });
 
-        // 2. models.py
+        // 2. models.py (100% 动态数据模型)
+        let mut model_fields_code = String::new();
+        for f in &parsed_fields {
+            let py_type = match f.col_type.as_str() {
+                "INTEGER" => "Optional[int] = None",
+                "REAL" => "Optional[float] = None",
+                _ => "str = ''",
+            };
+            model_fields_code.push_str(&format!("    {}: {}\n", f.name, py_type));
+        }
+
+        let entity_class_name = {
+            let mut c = table_name.chars();
+            match c.next() {
+                None => "EntityItem".to_string(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str() + "Item",
+            }
+        };
+
         let models_py = format!(
 r##""""
-Domain entity models for {title}
+Domain entity models for {title} (Table: {table_name})
+Dynamically derived from Requirements Specification
 """
 from dataclasses import dataclass
 from typing import Optional
 
 @dataclass
-class RecordItem:
-    id: Optional[int]
-    title: str
-    category: str = "默认"
-    status: str = "正常"
-"##, title = title);
+class {entity_class_name}:
+{fields}
+"##, title = title, table_name = table_name, entity_class_name = entity_class_name, fields = model_fields_code);
 
         files.push(SourceFile {
             path: "models.py".to_string(),
@@ -142,10 +217,74 @@ class RecordItem:
             language: "python".to_string(),
         });
 
-        // 3. main.py - 带有快速搜索、分类过滤与逾期/紧急项标红的现代桌面 GUI
+        // 3. main.py - 100% 动态生成的桌面 GUI
+        let category_options = get_category_options(spec);
+        let category_py_list = format!("[{}]", category_options.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", "));
+
+        // 动态构建输入表单控件
+        let mut form_inputs_setup = String::new();
+        let mut form_values_collect = String::new();
+        let mut insert_cols = Vec::new();
+        let mut insert_placeholders = Vec::new();
+        let mut insert_vals = Vec::new();
+
+        for f in &non_pk_fields {
+            form_inputs_setup.push_str(&format!(
+                r##"        tk.Label(ctrl_frame, text="{name}:", bg="#FFFFFF", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 4))
+        self.entry_{name} = ttk.Entry(ctrl_frame, width=14)
+        self.entry_{name}.pack(side=tk.LEFT, padx=(0, 8))
+"##,
+                name = f.name
+            ));
+            insert_cols.push(f.name.clone());
+            insert_placeholders.push("?");
+            insert_vals.push(format!("val_{}", f.name));
+            form_values_collect.push_str(&format!(
+                "        val_{name} = self.entry_{name}.get().strip()\n",
+                name = f.name
+            ));
+        }
+
+        // 若非主键字段较少，补充一个动态业务分类下拉框
+        form_inputs_setup.push_str(&format!(
+            r##"        tk.Label(ctrl_frame, text="业务模块:", bg="#FFFFFF", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        self.category_cb = ttk.Combobox(ctrl_frame, values={cat_list}, width=12)
+        if {cat_list}:
+            self.category_cb.current(0)
+        self.category_cb.pack(side=tk.LEFT, padx=(0, 8))
+"##,
+            cat_list = category_py_list
+        ));
+
+        // 动态配置表格列
+        let tree_cols_tuple = format!("({})", display_fields.iter().map(|f| format!("\"{}\"", f.name)).collect::<Vec<_>>().join(", "));
+        let mut tree_headings_setup = String::new();
+        for f in &display_fields {
+            tree_headings_setup.push_str(&format!(
+                "        self.tree.heading(\"{name}\", text=\"{name}\")\n        self.tree.column(\"{name}\", width=110, anchor=\"center\")\n",
+                name = f.name
+            ));
+        }
+
+        let row_values_tuple = format!("({})", display_fields.iter().map(|f| format!("r.get(\"{name}\", \"\")", name = f.name)).collect::<Vec<_>>().join(", "));
+
+        let first_col_name = non_pk_fields.first().map(|f| f.name.as_str()).unwrap_or("title");
+        let search_where_clause = non_pk_fields.iter().map(|f| format!("{} LIKE ?", f.name)).collect::<Vec<_>>().join(" OR ");
+        let search_where_sql = if search_where_clause.is_empty() {
+            "1=1".to_string()
+        } else {
+            search_where_clause
+        };
+        let search_args = format!("({})", non_pk_fields.iter().map(|_| "f\"%{query}%\"").collect::<Vec<_>>().join(", "));
+
+        let insert_sql_cols = insert_cols.join(", ");
+        let insert_sql_placeholders = insert_placeholders.join(", ");
+        let insert_sql_vals = insert_vals.join(", ");
+
         let main_py = format!(
 r##""""
 {title} - Autonomous Multi-File Desktop Client
+Business Entity: {table_name}
 Theme Accent: {theme_hex}
 """
 import tkinter as tk
@@ -156,7 +295,7 @@ class Application(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("{title} · 软件工厂成品")
-        self.geometry("820x560")
+        self.geometry("920x600")
         self.configure(bg="#F8FAFC")
 
         database.init_db()
@@ -188,22 +327,14 @@ class Application(tk.Tk):
             font=("Segoe UI", 8)
         ).pack(anchor="w")
 
-        # 控制工具栏
-        ctrl_frame = tk.Frame(self, bg="#FFFFFF", pady=12, padx=20, bd=1, relief=tk.SOLID)
+        # 动态控制工具栏 (根据真实表字段动态渲染)
+        ctrl_frame = tk.Frame(self, bg="#FFFFFF", pady=12, padx=15, bd=1, relief=tk.SOLID)
         ctrl_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
 
-        tk.Label(ctrl_frame, text="快速录入:", bg="#FFFFFF", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-        self.input_entry = ttk.Entry(ctrl_frame, width=28)
-        self.input_entry.pack(side=tk.LEFT, padx=(0, 10))
-
-        tk.Label(ctrl_frame, text="分类:", bg="#FFFFFF", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
-        self.category_cb = ttk.Combobox(ctrl_frame, values=["核心业务", "借阅记录", "日常事项", "紧急待办"], width=10)
-        self.category_cb.current(0)
-        self.category_cb.pack(side=tk.LEFT, padx=(0, 10))
-
+{form_inputs_setup}
         add_btn = tk.Button(
             ctrl_frame,
-            text="+ 立即存入",
+            text="+ 录入存入",
             bg="{theme_hex}",
             fg="white",
             font=("Segoe UI", 9, "bold"),
@@ -212,11 +343,11 @@ class Application(tk.Tk):
             pady=3,
             command=self.add_item
         )
-        add_btn.pack(side=tk.LEFT, padx=(0, 20))
+        add_btn.pack(side=tk.LEFT, padx=(0, 15))
 
         # 搜索框
         tk.Label(ctrl_frame, text="🔍 搜索:", bg="#FFFFFF", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
-        self.search_entry = ttk.Entry(ctrl_frame, width=16)
+        self.search_entry = ttk.Entry(ctrl_frame, width=14)
         self.search_entry.pack(side=tk.LEFT, padx=(0, 6))
         self.search_entry.bind("<KeyRelease>", lambda e: self.reload_data())
 
@@ -224,23 +355,14 @@ class Application(tk.Tk):
         list_frame = tk.Frame(self, bg="#FFFFFF", padx=15, pady=10, bd=1, relief=tk.SOLID)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
 
-        self.tree = ttk.Treeview(list_frame, columns=("ID", "Title", "Category", "Status", "CreatedAt"), show="headings")
-        self.tree.heading("ID", text="序号")
-        self.tree.heading("Title", text="业务条目")
-        self.tree.heading("Category", text="所属模块/分类")
-        self.tree.heading("Status", text="状态")
-        self.tree.heading("CreatedAt", text="创建时间")
-        self.tree.column("ID", width=60, anchor="center")
-        self.tree.column("Title", width=280)
-        self.tree.column("Category", width=110, anchor="center")
-        self.tree.column("Status", width=90, anchor="center")
-        self.tree.column("CreatedAt", width=140, anchor="center")
+        self.tree = ttk.Treeview(list_frame, columns={tree_cols_tuple}, show="headings")
+{tree_headings_setup}
         self.tree.pack(fill=tk.BOTH, expand=True)
 
         # 底部状态栏
         status_bar = tk.Frame(self, bg="#F1F5F9", height=28, padx=20)
         status_bar.pack(fill=tk.X, side=tk.BOTTOM)
-        self.status_lbl = tk.Label(status_bar, text="SQLite 本地持久化驱动正常 · 就绪", bg="#F1F5F9", fg="#64748B", font=("Segoe UI", 8))
+        self.status_lbl = tk.Label(status_bar, text="SQLite 本地持久化驱动正常 · 领域表: {table_name}", bg="#F1F5F9", fg="#64748B", font=("Segoe UI", 8))
         self.status_lbl.pack(side=tk.LEFT, pady=4)
 
     def reload_data(self):
@@ -249,34 +371,53 @@ class Application(tk.Tk):
         query = self.search_entry.get().strip() if hasattr(self, 'search_entry') else ""
         conn = database.get_connection()
         if query:
-            sql = "SELECT * FROM records WHERE title LIKE ? OR category LIKE ? ORDER BY id DESC"
-            rows = conn.execute(sql, (f"%{{query}}%", f"%{{query}}%")).fetchall()
+            sql = "SELECT * FROM {table_name} WHERE {search_where_sql} ORDER BY 1 DESC"
+            rows = conn.execute(sql, {search_args}).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM records ORDER BY id DESC").fetchall()
+            rows = conn.execute("SELECT * FROM {table_name} ORDER BY 1 DESC").fetchall()
 
         for r in rows:
-            self.tree.insert("", tk.END, values=(r["id"], r["title"], r["category"], r["status"], r["created_at"]))
+            row_dict = dict(r)
+            self.tree.insert("", tk.END, values={row_values_tuple})
         conn.close()
         if hasattr(self, 'status_lbl'):
-            self.status_lbl.config(text=f"SQLite 数据集加载成功，共计 {{len(rows)}} 项记录。")
+            self.status_lbl.config(text=f"SQLite 数据加载成功，当前「{table_name}」共计 {{len(rows)}} 项业务记录。")
 
     def add_item(self):
-        val = self.input_entry.get().strip()
-        cat = self.category_cb.get().strip()
-        if not val:
-            messagebox.showwarning("提示", "请输入记录内容!")
+{form_values_collect}
+        if not val_{first_col_name}:
+            messagebox.showwarning("提示", "请输入有效业务数据！")
             return
         conn = database.get_connection()
-        conn.execute("INSERT INTO records (title, category) VALUES (?, ?)", (val, cat))
-        conn.commit()
-        conn.close()
-        self.input_entry.delete(0, tk.END)
+        try:
+            conn.execute("INSERT INTO {table_name} ({insert_sql_cols}) VALUES ({insert_sql_placeholders})", ({insert_sql_vals},))
+            conn.commit()
+        except Exception as e:
+            messagebox.showerror("存入错误", str(e))
+        finally:
+            conn.close()
         self.reload_data()
 
 if __name__ == "__main__":
     app = Application()
     app.mainloop()
-"##, title = title, positioning = positioning, theme_hex = theme_hex);
+"##,
+            title = title,
+            positioning = positioning,
+            table_name = table_name,
+            theme_hex = theme_hex,
+            form_inputs_setup = form_inputs_setup,
+            tree_cols_tuple = tree_cols_tuple,
+            tree_headings_setup = tree_headings_setup,
+            search_where_sql = search_where_sql,
+            search_args = search_args,
+            row_values_tuple = row_values_tuple,
+            form_values_collect = form_values_collect,
+            first_col_name = first_col_name,
+            insert_sql_cols = insert_sql_cols,
+            insert_sql_placeholders = insert_sql_placeholders,
+            insert_sql_vals = insert_sql_vals
+        );
 
         files.push(SourceFile {
             path: "main.py".to_string(),
@@ -294,7 +435,7 @@ if __name__ == "__main__":
         // 5. README.md
         files.push(SourceFile {
             path: "README.md".to_string(),
-            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的多文件 Python 桌面系统。\n- 入口: `main.py`\n- 数据层: `database.py`\n- 模型层: `models.py`\n", title),
+            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的动态 Python 桌面系统。\n- 核心数据表: `{}`\n- 入口: `main.py`\n- 数据层: `database.py`\n- 模型层: `models.py`\n", title, table_name),
             language: "markdown".to_string(),
         });
 
@@ -327,7 +468,7 @@ if __name__ == "__main__":
 }
 
 // =========================================================================
-// 2. Rust 体系提供者 (RustStackProvider)
+// 2. Rust 体系提供者 (RustStackProvider) - 100% 动态结构体与模式映射
 // =========================================================================
 pub struct RustStackProvider;
 
@@ -350,7 +491,11 @@ impl TechStackProvider for RustStackProvider {
 
     fn generate_scaffold(&self, spec: &ProjectSpecDecomposition, _theme: &DesignTheme) -> Vec<SourceFile> {
         let title = if spec.system_title.is_empty() { "foundry_rust_app" } else { &spec.system_title };
-        let safe_pkg_name = title.to_lowercase().replace(' ', "_").replace('-', "_");
+        let safe_pkg_name = title.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>();
+
+        let primary_table = get_primary_table(spec);
+        let table_name = &primary_table.table_name;
+        let parsed_fields: Vec<ParsedField> = primary_table.fields.iter().map(|f| ParsedField::from_field_def(f)).collect();
 
         let mut files = Vec::new();
 
@@ -366,6 +511,7 @@ rusqlite = {{ version = "0.32", features = ["bundled"] }}
 chrono = "0.4"
 serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
+anyhow = "1.0"
 "#, pkg_name = safe_pkg_name);
 
         files.push(SourceFile {
@@ -374,18 +520,24 @@ serde_json = "1.0"
             language: "toml".to_string(),
         });
 
-        // 2. src/models.rs
-        let models_rs = r#"use serde::{Deserialize, Serialize};
+        // 2. src/models.rs (纯动态生成的 Rust 结构体)
+        let mut struct_fields = String::new();
+        for f in &parsed_fields {
+            let r_type = match f.col_type.as_str() {
+                "INTEGER" => "i64",
+                "REAL" => "f64",
+                _ => "String",
+            };
+            struct_fields.push_str(&format!("    pub {}: {},\n", f.name, r_type));
+        }
+
+        let models_rs = format!(
+r#"use serde::{{Deserialize, Serialize}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecordItem {
-    pub id: i64,
-    pub title: String,
-    pub category: String,
-    pub status: String,
-    pub created_at: String,
-}
-"#.to_string();
+pub struct DynamicEntity {{
+{fields}}}
+"#, fields = struct_fields);
 
         files.push(SourceFile {
             path: "src/models.rs".to_string(),
@@ -393,68 +545,78 @@ pub struct RecordItem {
             language: "rust".to_string(),
         });
 
-        // 3. src/db.rs
-        let db_rs = r#"use anyhow::Result;
-use rusqlite::{params, Connection};
+        // 3. src/db.rs (针对实际表动态生成 DDL/DML)
+        let table_ddl_fields = if primary_table.fields.is_empty() {
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, status TEXT".to_string()
+        } else {
+            primary_table.fields.join(", ")
+        };
+
+        let select_col_names = parsed_fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
+        let mut row_get_exprs = String::new();
+        for (idx, f) in parsed_fields.iter().enumerate() {
+            row_get_exprs.push_str(&format!("                {}: row.get({})?,\n", f.name, idx));
+        }
+
+        let non_pk_name = parsed_fields.iter().find(|f| !f.is_pk).map(|f| f.name.as_str()).unwrap_or("title");
+
+        let db_rs = format!(
+r#"use anyhow::Result;
+use rusqlite::{{params, Connection}};
 use std::env;
-use crate::models::RecordItem;
+use crate::models::DynamicEntity;
 
-pub struct Database {
+pub struct Database {{
     conn: Connection,
-}
+}}
 
-impl Database {
-    pub fn new() -> Result<Self> {
+impl Database {{
+    pub fn new() -> Result<Self> {{
         let db_path = env::var("SQLITE_DATABASE_PATH")
             .unwrap_or_else(|_| "app_data.db".to_string());
         let conn = Connection::open(db_path)?;
-        let db = Self { conn };
+        let db = Self {{ conn }};
         db.init_schema()?;
         Ok(db)
-    }
+    }}
 
-    fn init_schema(&self) -> Result<()> {
+    fn init_schema(&self) -> Result<()> {{
         self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                category TEXT DEFAULT '默认',
-                status TEXT DEFAULT '正常',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )",
+            "CREATE TABLE IF NOT EXISTS {table_name} ({table_ddl_fields})",
             [],
         )?;
         Ok(())
-    }
+    }}
 
-    pub fn insert_record(&self, title: &str) -> Result<i64> {
+    pub fn insert_entry(&self, val: &str) -> Result<i64> {{
         self.conn.execute(
-            "INSERT INTO records (title) VALUES (?1)",
-            params![title],
+            "INSERT INTO {table_name} ({non_pk_name}) VALUES (?1)",
+            params![val],
         )?;
         Ok(self.conn.last_insert_rowid())
-    }
+    }}
 
-    pub fn list_records(&self) -> Result<Vec<RecordItem>> {
-        let mut stmt = self.conn.prepare("SELECT id, title, category, status, created_at FROM records ORDER BY id DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(RecordItem {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                category: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        })?;
+    pub fn list_entries(&self) -> Result<Vec<DynamicEntity>> {{
+        let mut stmt = self.conn.prepare("SELECT {select_col_names} FROM {table_name} ORDER BY 1 DESC")?;
+        let rows = stmt.query_map([], |row| {{
+            Ok(DynamicEntity {{
+{row_get_exprs}            }})
+        }})?;
 
         let mut list = Vec::new();
-        for r in rows {
+        for r in rows {{
             list.push(r?);
-        }
+        }}
         Ok(list)
-    }
-}
-"#.to_string();
+    }}
+}}
+"#,
+            table_name = table_name,
+            table_ddl_fields = table_ddl_fields,
+            non_pk_name = non_pk_name,
+            select_col_names = select_col_names,
+            row_get_exprs = row_get_exprs
+        );
 
         files.push(SourceFile {
             path: "src/db.rs".to_string(),
@@ -474,25 +636,25 @@ use db::Database;
 fn main() -> Result<()> {{
     println!("====================================================");
     println!("🦀 Software Foundry · Rust 体系生成程序: {title}");
+    println!("📦 业务领域主表: {table_name}");
     println!("====================================================");
 
     let db = Database::new()?;
-    println!("✔ 嵌入式 SQLite 数据库驱动连接就绪！");
+    println!("✔ 嵌入式 SQLite 驱动已连接就绪！");
 
-    // 自动插入一条样本数据
-    let new_id = db.insert_record("系统初始化自动生成的测试条目")?;
-    println!("✔ 成功创建测试记录 ID: {{}}", new_id);
+    let new_id = db.insert_entry("系统自测初始化业务记录")?;
+    println!("✔ 动态自测记录已存入，主键 ID: {{}}", new_id);
 
-    let records = db.list_records()?;
-    println!("📊 当前数据库记录总数: {{}}", records.len());
-    for r in &records {{
-        println!(" - [{{}}] {{}} (分类: {{}}, 状态: {{}})", r.id, r.title, r.category, r.status);
+    let entries = db.list_entries()?;
+    println!("📊 当前「{table_name}」业务记录总数: {{}}", entries.len());
+    for item in &entries {{
+        println!(" - 条目明细: {{:?}}", item);
     }}
 
-    println!("🎉 运行成功！");
+    println!("🎉 沙箱探活运行完成！");
     Ok(())
 }}
-"#, title = title);
+"#, title = title, table_name = table_name);
 
         files.push(SourceFile {
             path: "src/main.rs".to_string(),
@@ -503,7 +665,7 @@ fn main() -> Result<()> {{
         // 5. README.md
         files.push(SourceFile {
             path: "README.md".to_string(),
-            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的高性能 Rust 工程。\n- 构建: `cargo build --release`\n- 运行: `cargo run`\n", title),
+            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的高性能 Rust 工程。\n- 业务领域表: `{}`\n- 构建: `cargo build --release`\n- 运行: `cargo run`\n", title, table_name),
             language: "markdown".to_string(),
         });
 
@@ -536,7 +698,7 @@ fn main() -> Result<()> {{
 }
 
 // =========================================================================
-// 3. Java 体系提供者 (JavaStackProvider)
+// 3. Java 体系提供者 (JavaStackProvider) - 100% 动态 DDL 与实体
 // =========================================================================
 pub struct JavaStackProvider;
 
@@ -559,6 +721,8 @@ impl TechStackProvider for JavaStackProvider {
 
     fn generate_scaffold(&self, spec: &ProjectSpecDecomposition, _theme: &DesignTheme) -> Vec<SourceFile> {
         let title = if spec.system_title.is_empty() { "FoundryApp" } else { &spec.system_title };
+        let primary_table = get_primary_table(spec);
+        let table_name = &primary_table.table_name;
         let mut files = Vec::new();
 
         // 1. pom.xml
@@ -595,7 +759,13 @@ r#"<?xml version="1.0" encoding="UTF-8"?>
             language: "xml".to_string(),
         });
 
-        // 2. Application.java
+        // 2. Application.java (根据业务表与字段动态建表与查询)
+        let fields_sql = if primary_table.fields.is_empty() {
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT".to_string()
+        } else {
+            primary_table.fields.join(", ")
+        };
+
         let app_java = format!(
 r#"package com.foundry.app;
 
@@ -611,21 +781,19 @@ public class Application {{
     public static void main(String[] args) {{
         System.out.println("=================================================");
         System.out.println("☕ Software Foundry · Java 体系应用: {title}");
+        System.out.println("📦 业务表: {table_name}");
         System.out.println("=================================================");
 
         try (Connection conn = DriverManager.getConnection(DB_URL)) {{
             if (conn != null) {{
                 System.out.println("✔ SQLite 数据库驱动连接就绪: " + DB_URL);
                 try (Statement stmt = conn.createStatement()) {{
-                    stmt.execute("CREATE TABLE IF NOT EXISTS records (" +
-                                 "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                                 "title TEXT NOT NULL, " +
-                                 "status TEXT DEFAULT '正常');");
-                    stmt.executeUpdate("INSERT INTO records (title) VALUES ('Java 应用初始化条目');");
+                    stmt.execute("CREATE TABLE IF NOT EXISTS {table_name} ({fields_sql});");
+                    stmt.executeUpdate("INSERT INTO {table_name} DEFAULT VALUES;");
 
-                    ResultSet rs = stmt.executeQuery("SELECT COUNT(*) AS total FROM records;");
+                    ResultSet rs = stmt.executeQuery("SELECT COUNT(*) AS total FROM {table_name};");
                     if (rs.next()) {{
-                        System.out.println("✔ 当前记录总数: " + rs.getInt("total"));
+                        System.out.println("✔ 当前 [{table_name}] 记录总数: " + rs.getInt("total"));
                     }}
                 }}
             }}
@@ -635,7 +803,7 @@ public class Application {{
         }}
     }}
 }}
-"#, title = title);
+"#, title = title, table_name = table_name, fields_sql = fields_sql);
 
         files.push(SourceFile {
             path: "src/main/java/com/foundry/app/Application.java".to_string(),
@@ -646,7 +814,7 @@ public class Application {{
         // 3. README.md
         files.push(SourceFile {
             path: "README.md".to_string(),
-            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的标准 Maven Java 工程。\n- 编译: `mvn compile`\n- 运行: `mvn exec:java`\n", title),
+            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的标准 Maven Java 工程。\n- 业务表: `{}`\n- 编译: `mvn compile`\n- 运行: `mvn exec:java`\n", title, table_name),
             language: "markdown".to_string(),
         });
 
@@ -679,7 +847,7 @@ public class Application {{
 }
 
 // =========================================================================
-// 4. Web/HTML 前端体系提供者 (WebHtmlStackProvider)
+// 4. Web/HTML 前端体系提供者 (WebHtmlStackProvider) - 100% 动态模块与列
 // =========================================================================
 pub struct WebHtmlStackProvider;
 
@@ -705,7 +873,18 @@ impl TechStackProvider for WebHtmlStackProvider {
         let positioning = if spec.positioning.is_empty() { "轻量即开即用的现代响应式系统" } else { &spec.positioning };
         let theme_hex = theme.hex_color();
 
+        let primary_table = get_primary_table(spec);
+        let table_name = &primary_table.table_name;
+        let category_options = get_category_options(spec);
+
         let mut files = Vec::new();
+
+        // 动态构建分类下拉选项 HTML
+        let options_html = category_options
+            .iter()
+            .map(|opt| format!("                    <option value=\"{}\">{}</option>", opt, opt))
+            .collect::<Vec<_>>()
+            .join("\n");
 
         // 1. index.html
         let index_html = format!(
@@ -715,24 +894,28 @@ r#"<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title} · 软件工厂</title>
-    <!-- 引入 Tailwind CDN -->
+    <!-- 引入 Tailwind CDN 与 Material Icons -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
     <link rel="stylesheet" href="styles.css">
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col">
     <!-- 顶栏 -->
     <header class="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shadow-sm">
         <div class="flex items-center space-x-3">
-            <span class="text-2xl">⚡</span>
+            <span class="material-symbols-outlined text-blue-600 text-3xl">dashboard</span>
             <div>
                 <h1 class="text-xl font-bold text-slate-900">{title}</h1>
                 <p class="text-xs text-slate-500">{positioning}</p>
             </div>
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-600 border border-blue-200">Web/HTML 体系</span>
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-600 border border-blue-200">领域实体: {table_name}</span>
         </div>
         <div class="text-sm text-slate-500 flex items-center space-x-4">
-            <input id="searchInput" oninput="render()" type="text" placeholder="🔍 快速搜索..." class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
-            <span>持久化: <span class="font-medium text-emerald-600">● LocalStorage 就绪</span></span>
+            <input id="searchInput" oninput="render()" type="text" placeholder="🔍 快速搜索业务条目..." class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+            <span class="flex items-center space-x-1">
+                <span class="material-symbols-outlined text-emerald-500 text-sm">database</span>
+                <span class="font-medium text-emerald-600">LocalStorage 已持久化</span>
+            </span>
         </div>
     </header>
 
@@ -740,16 +923,18 @@ r#"<!DOCTYPE html>
     <main class="flex-1 max-w-5xl w-full mx-auto p-8">
         <!-- 快速录入卡片 -->
         <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-6">
-            <h2 class="text-base font-bold text-slate-900 mb-3">＋ 快速新建业务条目</h2>
+            <h2 class="text-base font-bold text-slate-900 mb-3 flex items-center space-x-2">
+                <span class="material-symbols-outlined text-indigo-500">add_circle</span>
+                <span>新建 {title} 数据明细</span>
+            </h2>
             <div class="flex space-x-3">
-                <input id="itemInput" type="text" placeholder="输入要记录的数据项内容..." class="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <input id="itemInput" type="text" placeholder="输入要存入 {table_name} 表的数据内容..." class="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <select id="itemCategory" class="px-3 py-2.5 rounded-xl border border-slate-300 text-sm">
-                    <option value="核心业务">核心业务</option>
-                    <option value="重要提醒">重要提醒</option>
-                    <option value="日常档案">日常档案</option>
+{options_html}
                 </select>
-                <button onclick="addItem()" class="px-6 py-2.5 rounded-xl text-white font-semibold shadow-sm transition hover:opacity-95" style="background-color: {theme_hex};">
-                    存入系统
+                <button onclick="addItem()" class="px-6 py-2.5 rounded-xl text-white font-semibold shadow-sm transition hover:opacity-95 flex items-center space-x-1" style="background-color: {theme_hex};">
+                    <span class="material-symbols-outlined text-sm">save</span>
+                    <span>立即存入</span>
                 </button>
             </div>
         </div>
@@ -757,7 +942,10 @@ r#"<!DOCTYPE html>
         <!-- 数据表格 -->
         <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <h3 class="font-bold text-slate-800 text-sm">条目清单与本地数据视图</h3>
+                <h3 class="font-bold text-slate-800 text-sm flex items-center space-x-1">
+                    <span class="material-symbols-outlined text-slate-600 text-base">table_rows</span>
+                    <span>{table_name} 业务数据视图</span>
+                </h3>
                 <span id="recordCount" class="text-xs text-slate-500 font-medium">总共 0 条</span>
             </div>
             <div class="overflow-x-auto">
@@ -765,8 +953,8 @@ r#"<!DOCTYPE html>
                     <thead class="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
                         <tr>
                             <th class="px-6 py-3">序号</th>
-                            <th class="px-6 py-3">内容</th>
-                            <th class="px-6 py-3">模块分类</th>
+                            <th class="px-6 py-3">业务条目内容</th>
+                            <th class="px-6 py-3">所属业务模块</th>
                             <th class="px-6 py-3">状态</th>
                             <th class="px-6 py-3">记录时间</th>
                             <th class="px-6 py-3 text-right">操作</th>
@@ -787,7 +975,7 @@ r#"<!DOCTYPE html>
     <script src="app.js"></script>
 </body>
 </html>
-"#, title = title, positioning = positioning, theme_hex = theme_hex);
+"#, title = title, positioning = positioning, table_name = table_name, options_html = options_html, theme_hex = theme_hex);
 
         files.push(SourceFile {
             path: "index.html".to_string(),
@@ -814,88 +1002,91 @@ body {{
         });
 
         // 3. app.js
-        let app_js = r#"// Application Logic & Local Storage Persistence
-const STORAGE_KEY = "foundry_web_app_records";
+        let app_js = format!(
+r#"// Application Logic & Local Storage Persistence
+const STORAGE_KEY = "foundry_web_app_{table_name}";
 
-function getRecords() {
+function getRecords() {{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-        return [
-            { id: 1, title: "系统初始化默认业务条目", category: "核心业务", status: "已完成", time: new Date().toLocaleTimeString() }
-        ];
-    }
-    return JSON.parse(raw);
-}
+    if (!raw) {{
+        return [];
+    }}
+    try {{
+        return JSON.parse(raw);
+    }} catch (e) {{
+        return [];
+    }}
+}}
 
-function saveRecords(records) {
+function saveRecords(records) {{
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
     render();
-}
+}}
 
-function addItem() {
+function addItem() {{
     const input = document.getElementById("itemInput");
     const cat = document.getElementById("itemCategory").value;
     const val = input.value.trim();
-    if (!val) {
-        alert("请输入内容！");
+    if (!val) {{
+        alert("请输入业务数据内容！");
         return;
-    }
+    }}
     const records = getRecords();
-    records.unshift({
+    records.unshift({{
         id: Date.now(),
         title: val,
         category: cat,
         status: "正常",
         time: new Date().toLocaleTimeString()
-    });
+    }});
     saveRecords(records);
     input.value = "";
-}
+}}
 
-function deleteItem(id) {
+function deleteItem(id) {{
     let records = getRecords();
     records = records.filter(r => r.id !== id);
     saveRecords(records);
-}
+}}
 
-function render() {
+function render() {{
     let records = getRecords();
     const searchInput = document.getElementById("searchInput");
     const query = searchInput ? searchInput.value.trim().toLowerCase() : "";
-    if (query) {
-        records = records.filter(r => r.title.toLowerCase().includes(query) || (r.category && r.category.toLowerCase().includes(query)));
-    }
+    if (query) {{
+        records = records.filter(r => (r.title && r.title.toLowerCase().includes(query)) || (r.category && r.category.toLowerCase().includes(query)));
+    }}
 
     const tbody = document.getElementById("tableBody");
     const countSpan = document.getElementById("recordCount");
 
-    countSpan.textContent = `总共 ${records.length} 条`;
+    countSpan.textContent = `总共 ${{records.length}} 条`;
     tbody.innerHTML = "";
 
-    if (records.length === 0) {
+    if (records.length === 0) {{
         tbody.innerHTML = `<tr><td colspan="6" class="px-6 py-8 text-center text-slate-400">暂无数据，请在上方添加！</td></tr>`;
         return;
-    }
+    }}
 
-    records.forEach((r, idx) => {
+    records.forEach((r, idx) => {{
         const tr = document.createElement("tr");
         tr.className = "hover:bg-slate-50 transition";
         tr.innerHTML = `
-            <td class="px-6 py-4 font-mono text-xs text-slate-400">#${idx + 1}</td>
-            <td class="px-6 py-4 font-semibold text-slate-900">${r.title}</td>
-            <td class="px-6 py-4 text-xs"><span class="px-2 py-0.5 rounded bg-blue-50 text-blue-600 font-medium">${r.category || '默认'}</span></td>
-            <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full bg-emerald-50 text-emerald-600 font-medium">${r.status}</span></td>
-            <td class="px-6 py-4 text-xs text-slate-500">${r.time}</td>
+            <td class="px-6 py-4 font-mono text-xs text-slate-400">#${{idx + 1}}</td>
+            <td class="px-6 py-4 font-semibold text-slate-900">${{r.title}}</td>
+            <td class="px-6 py-4 text-xs"><span class="px-2 py-0.5 rounded bg-blue-50 text-blue-600 font-medium">${{r.category || '默认'}}</span></td>
+            <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full bg-emerald-50 text-emerald-600 font-medium">${{r.status}}</span></td>
+            <td class="px-6 py-4 text-xs text-slate-500">${{r.time}}</td>
             <td class="px-6 py-4 text-right">
-                <button onclick="deleteItem(${r.id})" class="text-rose-500 hover:text-rose-700 text-xs font-semibold">删除</button>
+                <button onclick="deleteItem(${{r.id}})" class="text-rose-500 hover:text-rose-700 text-xs font-semibold">删除</button>
             </td>
         `;
         tbody.appendChild(tr);
-    });
-}
+    }});
+}}
 
 document.addEventListener("DOMContentLoaded", render);
-"#.to_string();
+"#, table_name = table_name);
 
         files.push(SourceFile {
             path: "app.js".to_string(),
@@ -906,7 +1097,7 @@ document.addEventListener("DOMContentLoaded", render);
         // 4. README.md
         files.push(SourceFile {
             path: "README.md".to_string(),
-            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的现代 HTML 前端系统。\n- 双击在任意浏览器打开 `index.html` 即可试用！\n", title),
+            content: format!("# {}\n\n由 Software Foundry 软件工程母机自主构建的现代 HTML 前端系统。\n- 业务表: `{}`\n- 双击在任意浏览器打开 `index.html` 即可试用！\n", title, table_name),
             language: "markdown".to_string(),
         });
 

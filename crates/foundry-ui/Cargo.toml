@@ -11,7 +11,7 @@ foundry-core.workspace = true
 foundry-sandbox.workspace = true
 provider-pygo = { path = "../../providers/provider-pygo" }
 connector-github = { path = "../../plugins/connector-github" }
-eframe = { workspace = true, default-features = false, features = ["default_fonts", "glow"] }
+eframe = { workspace = true, features = ["default_fonts", "glow"] }
 chrono.workspace = true
 open.workspace = true
 tokio.workspace = true

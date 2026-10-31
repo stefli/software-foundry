@@ -23,12 +23,14 @@ build/
 *.sqlite3
 foundry_test_runtime.db
 *.log
+foundry_workspace/
 
 # Sensitive credentials & environment
 .env
 .env.*
 secrets.json
 github_auth.json
+.foundry/
 
 # OS specific files
 Thumbs.db

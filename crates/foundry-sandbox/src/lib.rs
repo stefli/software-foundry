@@ -7,7 +7,7 @@ use tokio::process::Command;
 use tracing::{debug, info};
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::process::CommandExt as _;
 
 /// 沙箱工作空间上下文
 pub struct SandboxWorkspace {
