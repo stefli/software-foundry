@@ -1,0 +1,26 @@
+pub mod agentic_loop;
+pub mod artifact_store;
+pub mod credential_store;
+pub mod fsm;
+pub mod gemini_client;
+pub mod github_auth;
+pub mod harness;
+pub mod issue_source;
+pub mod lifecycle_subagents;
+pub mod pi;
+pub mod plugin_registry;
+pub mod provider_registry;
+pub mod requirements_agent;
+
+pub use agentic_loop::AgenticLoopEngine;
+pub use artifact_store::ArtifactStore;
+pub use credential_store::CredentialStore;
+pub use lifecycle_subagents::{MockupDesignerAgent, TestPlannerAgent};
+pub use requirements_agent::RequirementsAgent;
+pub use fsm::{FoundryFsm, TransitionEvent};
+pub use gemini_client::GeminiClient;
+pub use github_auth::GitHubAuthManager;
+pub use harness::HarnessLoop;
+pub use issue_source::IssueProvider;
+pub use plugin_registry::PluginRegistry;
+pub use provider_registry::ProviderManager;

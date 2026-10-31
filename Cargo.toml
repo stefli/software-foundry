@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/foundry-proto",
+    "crates/foundry-plugin-api",
+    "crates/foundry-core",
+    "crates/foundry-sandbox",
+    "crates/foundry-ui",
+    "providers/provider-pygo",
+    "plugins/connector-github",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Foundry Team"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# 异步运行时与工具
+tokio = { version = "1.41", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# 序列化与数据交换
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 错误处理与日志
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 核心协议依赖
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# 本地数据与持久化
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# 桌面 GUI 框架
+eframe = "0.29"
+
+# 网络请求与系统交互
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+open = "5.3"
+
+# GUI 渲染底座
+gpui = "0.2.2"
+
+# 项目内部依赖
+foundry-proto = { path = "crates/foundry-proto" }
+foundry-plugin-api = { path = "crates/foundry-plugin-api" }
+foundry-core = { path = "crates/foundry-core" }
+foundry-sandbox = { path = "crates/foundry-sandbox" }
+provider-pygo = { path = "providers/provider-pygo" }

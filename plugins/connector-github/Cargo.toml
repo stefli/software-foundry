@@ -1,0 +1,19 @@
+[package]
+name = "connector-github"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+foundry-proto.workspace = true
+foundry-plugin-api.workspace = true
+foundry-core.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+open.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+chrono.workspace = true

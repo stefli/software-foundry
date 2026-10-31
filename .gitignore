@@ -1,0 +1,36 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+dist/
+build/
+
+# Sandbox temporary databases & logs
+*.db
+*.sqlite
+*.sqlite3
+foundry_test_runtime.db
+*.log
+
+# Sensitive credentials & environment
+.env
+.env.*
+secrets.json
+github_auth.json
+
+# OS specific files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store

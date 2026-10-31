@@ -1,0 +1,22 @@
+[package]
+name = "foundry-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+foundry-proto.workspace = true
+foundry-plugin-api.workspace = true
+foundry-core.workspace = true
+foundry-sandbox.workspace = true
+provider-pygo = { path = "../../providers/provider-pygo" }
+connector-github = { path = "../../plugins/connector-github" }
+eframe = { workspace = true, default-features = false, features = ["default_fonts", "glow"] }
+chrono.workspace = true
+open.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true

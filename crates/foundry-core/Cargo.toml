@@ -1,0 +1,23 @@
+[package]
+name = "foundry-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+foundry-proto.workspace = true
+foundry-plugin-api.workspace = true
+foundry-sandbox.workspace = true
+provider-pygo.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+open.workspace = true
