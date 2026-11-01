@@ -347,6 +347,7 @@ impl SoftwareFoundryApp {
                 return;
             }
         };
+        let mockup = cur_prj.mockup.clone();
 
         self.is_busy = true;
         self.pipeline_state = PipelineState::Coding;
@@ -374,7 +375,7 @@ impl SoftwareFoundryApp {
                 }
             });
 
-            match engine.run_loop(&spec, stack, &theme, step_tx).await {
+            match engine.run_loop(&spec, mockup.as_ref(), stack, &theme, step_tx).await {
                 Ok((entry_file, mut files)) => {
                     // 为桌面应用自动生成独立可执行文件构建脚本与 Inno Setup 安装包脚本
                     let title_safe = spec.system_title.replace(' ', "_");

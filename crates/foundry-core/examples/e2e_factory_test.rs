@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
     let start_t = Instant::now();
     let (generated_file, project_files) = engine.run_loop(
         &decomp,
+        Some(&mockup_artifact),
         decomp.recommended_stack,
         &foundry_proto::DesignTheme::OceanBlue,
         step_tx,

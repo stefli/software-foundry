@@ -1,5 +1,5 @@
 use anyhow::Result;
-use foundry_proto::{AgentLoopStep, DesignTheme, ProjectSpecDecomposition, SourceFile, TargetStack};
+use foundry_proto::{AgentLoopStep, DesignTheme, MockupDesignArtifact, ProjectSpecDecomposition, SourceFile, TargetStack};
 use provider_pygo::StackRegistry;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -76,6 +76,7 @@ impl AgenticLoopEngine {
     pub async fn run_loop(
         &self,
         spec: &ProjectSpecDecomposition,
+        mockup: Option<&MockupDesignArtifact>,
         stack: TargetStack,
         theme: &DesignTheme,
         step_sender: mpsc::Sender<AgentLoopStep>,
@@ -90,6 +91,21 @@ impl AgenticLoopEngine {
 
         // 1. 初始化并铺设该技术体系的工业级多文件脚手架
         let mut project_files = provider.generate_scaffold(spec, theme);
+
+        // 如果是 Web/HTML 体系且存在 Mockup 设计产物，以高保真 Mockup 作为真实 index.html 交付
+        if stack == TargetStack::WebHtml {
+            if let Some(m) = mockup {
+                if !m.html_preview.trim().is_empty() {
+                    for f in project_files.iter_mut() {
+                        if f.path == "index.html" {
+                            f.content = m.html_preview.clone();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         for file in &project_files {
             let target_path = self.workspace_dir.join(&file.path);
             if let Some(parent) = target_path.parent() {
@@ -107,6 +123,19 @@ impl AgenticLoopEngine {
             stack.display_name(),
             project_files.len()
         );
+
+        // 提取 UI 原型规约供编码 Agent 精准还原
+        let mockup_guidance = if let Some(m) = mockup {
+            let components_str = m.components.iter().map(|c| {
+                format!("  * [{}] {}: {} (样本数据: {:?})", c.component_type, c.name, c.description, c.sample_data)
+            }).collect::<Vec<_>>().join("\n");
+            format!(
+                "【UI/UX 交互原型设计规范（必须 100% 像素级对齐还原）】:\n- 原型页面标题: {}\n- 整体布局规划: {}\n- 核心组件清单（主界面必须全部呈现，严禁遗漏）:\n{}\n",
+                m.page_title, m.layout_overview, components_str
+            )
+        } else {
+            "【UI/UX 交互原型设计规范】: 遵循高保真工业级桌面现代控件规范。".to_string()
+        };
 
         for iteration in 1..=self.max_iterations {
             let step_start = Instant::now();
@@ -128,13 +157,14 @@ impl AgenticLoopEngine {
 【确认技术栈体系】: {} ({})
 【核心业务功能】:
 {}
+{}
 【上一轮沙箱环境反馈】:
 {}
 
-【任务要求与规范】:
-1. 针对主入口文件 `{}` 进行完善，使其与本地持久化和业务逻辑深度融合。
+【任务要求与形态一致性铁律】:
+1. 制作的产品形态必须跟上述【UI/UX 交互原型设计规范】一模一样！原型中规划的所有组件（如顶部 KPI 统计卡片、业务搜索控制台、数据表、操作面板等）必须在主界面 `{}` 中完整实现与布局，严禁简化退化为单一输入框！
 2. 必须具备极高代码健壮性：严禁出现语法错误或 Tkinter 窗口尺寸参数错误（如 `geometry("1000x700")` 正确，严禁使用逗号 `geometry("1000, 700")`）。
-3. 纯原生标准库实现，零第三方环境依赖，保证直接执行 `python main.py` 即可在桌面弹出。
+3. 纯原生标准库实现，零第三方外部库依赖，保证直接执行 `python main.py` 即可在桌面精美弹出。
 4. 请输出完整可直接执行的文件源码，使用 ```{} 包裹。
 "#,
                 spec.system_title,
@@ -142,6 +172,7 @@ impl AgenticLoopEngine {
                 stack.display_name(),
                 stack.description(),
                 spec.modules.iter().map(|m| format!("- [{}] {}: {}", m.priority, m.name, m.desc)).collect::<Vec<_>>().join("\n"),
+                mockup_guidance,
                 last_observation,
                 entry_rel,
                 lang_tag
