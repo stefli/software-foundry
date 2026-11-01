@@ -86,6 +86,7 @@ struct WorkspaceProject {
     spec: Option<ProjectSpecDecomposition>,
     mockup: Option<MockupDesignArtifact>,
     test_plan: Option<TestPlanArtifact>,
+    pub generated_files: Vec<SourceFile>,
     chat_log: Vec<(String, String)>, // (sender, content)
 }
 
@@ -161,28 +162,16 @@ impl SoftwareFoundryApp {
         let initial_projects = vec![
             WorkspaceProject {
                 id: "PRJ-001".to_string(),
-                name: "社区图书借阅逾期管理系统".to_string(),
-                idea: "图书借还登记与读者信息管理，逾期自动用鲜艳红色标出警示，支持即时过滤搜索。".to_string(),
+                name: "新工程项目 #1".to_string(),
+                idea: String::new(),
                 target_stack: TargetStack::Python,
                 theme: DesignTheme::OceanBlue,
                 spec: None,
                 mockup: None,
                 test_plan: None,
+                generated_files: Vec::new(),
                 chat_log: vec![
-                    ("系统助手".to_string(), "👋 欢迎使用 Software Foundry 软件工程母机！\n请在下方输入需求构想，或点击预设案例气泡。支持生成独立 EXE 运行产物与 InnoSetup 安装包脚本。".to_string())
-                ],
-            },
-            WorkspaceProject {
-                id: "PRJ-002".to_string(),
-                name: "现代卡片式 Web 数据看板".to_string(),
-                idea: "现代卡片风格响应式 Web 前端看板与数据管理页面".to_string(),
-                target_stack: TargetStack::WebHtml,
-                theme: DesignTheme::WarmSunset,
-                spec: None,
-                mockup: None,
-                test_plan: None,
-                chat_log: vec![
-                    ("系统助手".to_string(), "Web/HTML 架构工程已就绪，双击即可在浏览器中试用。".to_string())
+                    ("系统助手".to_string(), "👋 欢迎使用 Software Foundry 软件工程母机！\n请在下方输入您的真实业务需求构想（如电商、进销存、设备监控、医疗或企业定制系统）。母机将 100% 按照您的业务要求进行架构拆解、UI交互设计、QA验收梳理与沙箱代码制造。".to_string())
                 ],
             },
         ];
@@ -221,6 +210,19 @@ impl SoftwareFoundryApp {
         let cur_prj = &mut self.projects[self.active_project_idx];
         cur_prj.chat_log.push(("用户".to_string(), prompt.clone()));
         cur_prj.idea = prompt.clone();
+        // 清理当前项目旧的派生产物与源码缓存，确保洁净室环境
+        cur_prj.spec = None;
+        cur_prj.mockup = None;
+        cur_prj.test_plan = None;
+        cur_prj.generated_files.clear();
+        self.generated_files.clear();
+
+        // 物理清理沙箱目录，彻底杜绝历史编译产物残留污染
+        let prj_id = cur_prj.id.clone();
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let sandbox_dir = current_dir.join("foundry_workspace").join("sandbox").join(&prj_id);
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+        let _ = std::fs::create_dir_all(&sandbox_dir);
 
         let tx = self.ui_tx.clone();
         let api_key = self.llm_config.api_key.clone();
@@ -352,6 +354,8 @@ impl SoftwareFoundryApp {
 
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let sandbox_dir = current_dir.join("foundry_workspace").join("sandbox").join(&prj_id);
+        // 彻底清空并重置物理沙箱洁净室目录，杜绝任何历史残留
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
         let _ = std::fs::create_dir_all(&sandbox_dir);
 
         let tx = self.ui_tx.clone();
@@ -635,8 +639,9 @@ impl eframe::App for SoftwareFoundryApp {
                 }
                 UiUpdateMsg::ManufacturingCompleted { path: _, files } => {
                     self.store.set_source_files(files.clone());
-                    self.generated_files = files;
+                    self.generated_files = files.clone();
                     let prj = &mut self.projects[self.active_project_idx];
+                    prj.generated_files = files;
                     prj.chat_log.push((
                         "编码自愈 Agent".to_string(),
                         format!("🎉 [{:?}] 多文件工程与沙箱自测 100% 成功！\n- 已生成 {} 个源文件与构建脚本\n- 已包含 package_exe.bat 独立 EXE 打包脚本\n- 已生成 installer.iss InnoSetup 安装包制作脚本\n- 可点击左侧文件树直接在中央代码查看器中检视任何源码。",
@@ -748,12 +753,14 @@ impl eframe::App for SoftwareFoundryApp {
                     spec: None,
                     mockup: None,
                     test_plan: None,
+                    generated_files: Vec::new(),
                     chat_log: vec![("系统".to_string(), "新工程沙箱已分配，请输入您的业务需求。".to_string())],
                 });
                 self.active_project_idx = self.projects.len() - 1;
                 self.pipeline_state = PipelineState::Pending;
                 self.store = ArtifactStore::new();
                 self.generated_files.clear();
+                self.selected_file_idx = 0;
             }
 
             ui.add_space(8.0);
@@ -771,6 +778,27 @@ impl eframe::App for SoftwareFoundryApp {
 
                     if ui.add_sized(Vec2::new(ui.available_width(), 28.0), btn).clicked() {
                         self.active_project_idx = i;
+                        // 原子级同步切换选中工程的源码与规约资产
+                        let cur = &self.projects[i];
+                        self.generated_files = cur.generated_files.clone();
+                        self.selected_file_idx = 0;
+                        let new_store = ArtifactStore::new();
+                        if !cur.idea.is_empty() {
+                            new_store.set_raw_idea(cur.idea.clone());
+                        }
+                        if let Some(ref s) = cur.spec {
+                            new_store.freeze_requirements(s.clone());
+                        }
+                        if let Some(ref m) = cur.mockup {
+                            new_store.set_mockup_design(m.clone());
+                        }
+                        if let Some(ref t) = cur.test_plan {
+                            new_store.set_test_plan(t.clone());
+                        }
+                        if !cur.generated_files.is_empty() {
+                            new_store.set_source_files(cur.generated_files.clone());
+                        }
+                        self.store = new_store;
                     }
                 }
             });
