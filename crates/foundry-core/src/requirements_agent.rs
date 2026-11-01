@@ -28,51 +28,55 @@ impl RequirementsAgent {
         let _ = stream_sender.send("🧠 正在审题并解读用户诉求...\n".to_string()).await;
 
         let prompt = format!(
-            r#"你是一个世界顶级的敏捷需求架构师与全栈技术专家。
+            r#"你是一个世界顶级的敏捷需求架构师与全栈系统分析专家。
 用户提议制作一个软件系统，诉求是：
 "{}"
 
-请为该项目进行深度的需求拆解、领域建模、技术栈选型与数据库设计。
-针对技术栈选型，用户可能是非技术小白，请评估哪种体系最适合用户的诉求（可选项: "Python", "Rust", "Java", "WebHtml"），并说明推荐理由。
-必须输出思维链 (thought_process) 详细记录你的思考推导心路历程。
-输出必须严格符合以下 JSON 格式，不要包裹任何多余的问候语或解释：
+【核心原则与铁律】：
+1. 必须 100% 紧扣用户输入的业务场景进行分析、领域建模与数据库设计！
+2. 严禁生成任何脱离用户诉求的通用或模板化业务（严禁出现借阅、健身房、图书、课程等与用户输入无关的内容）！
+3. 从用户的诉求中提炼出真实的核心实体、业务流程与管理痛点。
+4. 针对技术栈选型（可选项: "Python", "Rust", "Java", "WebHtml"），评估哪种最适合该业务并说明理由。
+5. 必须在 thought_process 中详细记录针对该具体业务的思维链推理过程。
+
+输出必须严格符合以下 JSON 格式规范，不要包裹任何解释性文字或 markdown 标记：
 
 {{
-  "thought_process": "详细陈述你的思维链推理过程：\n1. 意图解析：用户最迫切想要解决的核心痛点...\n2. 技术选型：为什么该场景最推荐此技术体系（兼顾性能与开发效率）...\n3. 业务实体推导：需要哪些实体与数据关系...\n4. 功能边界衡量：哪些功能属于核心 P0，哪些属于衍生 P1...\n5. SQLite 存储规划：数据表字段命名与主外键设计逻辑...",
-  "system_title": "提炼一个简练大气的项目名称（例如：飞马健身房会员与课时管理系统）",
-  "positioning": "一句话系统定位（例如：专为中小型健身房打造的免安装离线单机课时核销与会员追踪桌面工具）",
+  "thought_process": "1. 意图解析：针对用户输入的具体业务痛点分析...\n2. 业务实体推导：提炼该业务专有的核心数据实体与属性...\n3. 技术栈推荐：评估最适合当前业务的运行载体与持久化方案...\n4. 功能边界与优先级：规划 P0 核心与 P1 衍生功能...\n5. SQLite 表设计：设计匹配该业务的数据表与主外键...",
+  "system_title": "根据用户真实业务定制的高辨识度系统名称",
+  "positioning": "用一句话精准描述该系统的业务定位与使用场景",
   "recommended_stack": "Python",
-  "stack_rationale": "小白友好首选：极简开箱即用，原生内置 SQLite 数据存储，界面启动迅速。",
+  "stack_rationale": "推荐此技术体系的核心理由",
   "modules": [
     {{
-      "name": "模块名称1",
-      "desc": "通俗大白话描述此模块如何帮助用户解决业务问题",
+      "name": "属于该业务的具体功能模块名称1",
+      "desc": "详细描述该模块如何满足用户的业务场景",
       "priority": "P0"
     }},
     {{
-      "name": "模块名称2",
-      "desc": "通俗大白话描述此模块如何帮助用户解决业务问题",
+      "name": "属于该业务的具体功能模块名称2",
+      "desc": "详细描述该模块如何满足用户的业务场景",
       "priority": "P0"
     }},
     {{
-      "name": "模块名称3",
-      "desc": "通俗大白话描述此模块如何帮助用户解决业务问题",
+      "name": "属于该业务的具体功能模块名称3",
+      "desc": "详细描述该模块如何满足用户的业务场景",
       "priority": "P1"
     }}
   ],
   "db_tables": [
     {{
-      "table_name": "members",
-      "description": "会员基本信息表",
-      "fields": ["id INTEGER PRIMARY KEY", "name TEXT", "phone TEXT", "remaining_hours INTEGER", "created_at TEXT"]
+      "table_name": "核心业务实体表名（英文蛇形小写，必须与用户业务直接对应）",
+      "description": "实体业务用途说明",
+      "fields": ["id INTEGER PRIMARY KEY AUTOINCREMENT", "业务核心字段1 TEXT NOT NULL", "业务核心字段2 TEXT", "status TEXT", "created_at TEXT"]
     }},
     {{
-      "table_name": "course_logs",
-      "description": "上课核销明细表",
-      "fields": ["id INTEGER PRIMARY KEY", "member_id INTEGER", "coach TEXT", "deduct_hours INTEGER", "sign_time TEXT"]
+      "table_name": "关联业务流水/记录表名（英文蛇形小写）",
+      "description": "明细记录或事件流水业务说明",
+      "fields": ["id INTEGER PRIMARY KEY AUTOINCREMENT", "关联外键_id INTEGER", "明细字段 TEXT", "record_time TEXT"]
     }}
   ],
-  "advice": "给非技术用户的一句专业落地建议"
+  "advice": "针对用户该业务落地的一句专业架构建议"
 }}
 "#,
             user_idea

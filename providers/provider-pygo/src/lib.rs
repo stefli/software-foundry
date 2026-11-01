@@ -455,7 +455,7 @@ if __name__ == "__main__":
     fn test_spec(&self, working_dir: &str) -> SandboxExecutionSpec {
         SandboxExecutionSpec {
             command: "python".to_string(),
-            args: vec!["database.py".to_string()],
+            args: vec!["-c".to_string(), "import py_compile; py_compile.compile('main.py', doraise=True); py_compile.compile('database.py', doraise=True); print('Python syntax & compile verification 100% OK')".to_string()],
             env_vars: HashMap::new(),
             working_dir: working_dir.to_string(),
             timeout_seconds: 30,

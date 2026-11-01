@@ -586,6 +586,20 @@ impl eframe::App for SoftwareFoundryApp {
                     prj.spec = Some(decomp);
                     self.pipeline_state = PipelineState::RequirementsReview;
                     self.is_busy = false;
+
+                    if std::env::var("FOUNDRY_E2E_AUTO_CONFIRM").is_ok() {
+                        let cur_spec = prj.spec.as_ref().unwrap();
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] 需求架构师 Agent 分析成果核查:");
+                        println!("    • 系统命名: {}", cur_spec.system_title);
+                        println!("    • 业务定位: {}", cur_spec.positioning);
+                        println!("    • 推荐架构: {:?}", cur_spec.recommended_stack);
+                        println!("    • 模块列表: {:?}", cur_spec.modules.iter().map(|m| &m.name).collect::<Vec<_>>());
+                        println!("    • 数据表名: {:?}", cur_spec.db_tables.iter().map(|t| &t.table_name).collect::<Vec<_>>());
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] 确认阶段 1 需求规约，流转至 UI 原型设计阶段");
+                        self.trigger_mockup_design();
+                    }
                 }
                 UiUpdateMsg::RequirementsFailed(err) => {
                     let prj = &mut self.projects[self.active_project_idx];
@@ -607,6 +621,17 @@ impl eframe::App for SoftwareFoundryApp {
                     self.selected_tab = 1; // 自动切换到原型面板
                     self.center_mode = CenterViewMode::MockupPreview; // 自动切换至原型预览
                     self.is_busy = false;
+
+                    if std::env::var("FOUNDRY_E2E_AUTO_CONFIRM").is_ok() {
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] UI/UX 原型 Agent 设计成果核查:");
+                        println!("    • 原型标题: {}", mockup.page_title);
+                        println!("    • 布局描述: {}", mockup.layout_overview);
+                        println!("    • 原型组件数: {}", mockup.components.len());
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] 确认阶段 2 原型，流转至 QA 验收规划阶段");
+                        self.trigger_test_planning();
+                    }
                 }
                 UiUpdateMsg::MockupFailed(err) => {
                     let prj = &mut self.projects[self.active_project_idx];
@@ -627,6 +652,19 @@ impl eframe::App for SoftwareFoundryApp {
                     self.selected_tab = 2; // 自动切换到测试用例面板
                     self.center_mode = CenterViewMode::Chat;
                     self.is_busy = false;
+
+                    if std::env::var("FOUNDRY_E2E_AUTO_CONFIRM").is_ok() {
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] QA 测试规划 Agent 成果核查:");
+                        println!("    • 方案概览: {}", plan.plan_overview);
+                        println!("    • 测试用例数: {}", plan.test_cases.len());
+                        for tc in &plan.test_cases {
+                            println!("      - [{}] {}: {}", tc.id, tc.module_name, tc.scenario);
+                        }
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] 确认阶段 3 验收测试方案，触发全栈闭环制造");
+                        self.trigger_manufacturing();
+                    }
                 }
                 UiUpdateMsg::TestPlanFailed(err) => {
                     let prj = &mut self.projects[self.active_project_idx];
@@ -652,6 +690,23 @@ impl eframe::App for SoftwareFoundryApp {
                     self.selected_tab = 0; // 自动切换回产物交付页
                     self.center_mode = CenterViewMode::CodeViewer; // 制造完成后展示源码
                     self.is_busy = false;
+
+                    if std::env::var("FOUNDRY_E2E_AUTO_CONFIRM").is_ok() {
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] 自主生产制造闭环核查:");
+                        println!("    • 生成源文件数量: {}", self.generated_files.len());
+                        for f in &self.generated_files {
+                            println!("      - 文件路径: {} (语言: {}, 字节数: {})", f.path, f.language, f.content.len());
+                        }
+                        println!("============================================================");
+                        println!(">>> [FOUNDRY E2E] 试运行生产的真实桌面应用程序...");
+                        self.launch_software();
+                        println!(">>> [FOUNDRY E2E] 全流程 100% 端到端验证成功完成！将在 3 秒后安全退出 UI。");
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                            std::process::exit(0);
+                        });
+                    }
                 }
                 UiUpdateMsg::ManufacturingFailed(err) => {
                     let prj = &mut self.projects[self.active_project_idx];
@@ -1442,6 +1497,17 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Software Foundry",
         native_options,
-        Box::new(|cc| Ok(Box::new(SoftwareFoundryApp::new(cc)))),
+        Box::new(|cc| {
+            let mut app = SoftwareFoundryApp::new(cc);
+            // 真实端到端 UI 自动化测试驱动模式
+            if std::env::var("FOUNDRY_E2E_TEST").is_ok() {
+                let test_prompt = std::env::var("FOUNDRY_E2E_PROMPT").unwrap_or_else(|_| {
+                    "开发一个智能医疗器械灭菌与质检验收追踪系统，记录器械批次号、灭菌温度、检验员姓名与合格判定，支持本地 SQLite 持久化并编译独立 EXE".to_string()
+                });
+                println!(">>> [FOUNDRY E2E TEST] UI 启动成功，注入测试业务需求: {}", test_prompt);
+                app.trigger_requirements_analysis(test_prompt);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }

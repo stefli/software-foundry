@@ -43,6 +43,8 @@ struct GeminiResponseContent {
 #[derive(Deserialize)]
 struct GeminiResponsePart {
     text: Option<String>,
+    #[serde(default)]
+    thought: Option<bool>,
 }
 
 impl GeminiClient {
@@ -101,14 +103,31 @@ impl GeminiClient {
 
         let resp: GeminiResponse = res.json().await.context("解析大模型响应失败")?;
 
-        let reply = resp
+        let parts = resp
             .candidates
             .and_then(|c| c.into_iter().next())
             .and_then(|c| c.content)
             .and_then(|c| c.parts)
-            .and_then(|p| p.into_iter().next())
-            .and_then(|p| p.text)
             .unwrap_or_default();
+
+        // 优先提取非思考(thought != Some(true))的正文响应，避免误取内部思维链
+        let mut reply = String::new();
+        for part in &parts {
+            if part.thought != Some(true) {
+                if let Some(ref text) = part.text {
+                    reply.push_str(text);
+                }
+            }
+        }
+
+        // 兜底：如果全部带有 thought 或者只有一个 part，则拼接所有 text
+        if reply.trim().is_empty() {
+            for part in parts {
+                if let Some(text) = part.text {
+                    reply.push_str(&text);
+                }
+            }
+        }
 
         Ok(reply.trim().to_string())
     }

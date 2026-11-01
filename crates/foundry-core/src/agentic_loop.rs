@@ -131,9 +131,11 @@ impl AgenticLoopEngine {
 【上一轮沙箱环境反馈】:
 {}
 
-【任务】:
-针对主入口文件 `{}` 进行完善，使其与本地持久化和业务逻辑深度融合。
-请输出完整可直接执行的文件源码，使用 ```{} 包裹。
+【任务要求与规范】:
+1. 针对主入口文件 `{}` 进行完善，使其与本地持久化和业务逻辑深度融合。
+2. 必须具备极高代码健壮性：严禁出现语法错误或 Tkinter 窗口尺寸参数错误（如 `geometry("1000x700")` 正确，严禁使用逗号 `geometry("1000, 700")`）。
+3. 纯原生标准库实现，零第三方环境依赖，保证直接执行 `python main.py` 即可在桌面弹出。
+4. 请输出完整可直接执行的文件源码，使用 ```{} 包裹。
 "#,
                 spec.system_title,
                 spec.positioning,
@@ -148,8 +150,22 @@ impl AgenticLoopEngine {
             let raw_response = self.client.call_gemini_raw(&prompt).await
                 .unwrap_or_else(|e| format!("LLM 响应异常: {}", e));
 
-            // 如果提取到更深化的主逻辑代码，写回主文件并更新文件树
-            if let Some(refined_code) = Self::extract_file_code(&raw_response, lang_tag) {
+            // 如果提取到更深化的主逻辑代码，自动进行常规语法自愈（如修正常见 Tkinter geometry 逗号笔误）
+            if let Some(mut refined_code) = Self::extract_file_code(&raw_response, lang_tag) {
+                if lang_tag == "python" {
+                    // 自愈常见 geometry("w, h") 错误写法为 geometry("wxh")
+                    let needle = ".geometry(";
+                    if let Some(pos) = refined_code.find(needle) {
+                        let sub = &refined_code[pos..];
+                        if let Some(end) = sub.find(')') {
+                            let call_str = &sub[..=end];
+                            if call_str.contains(',') {
+                                let fixed = call_str.replace(", ", "x").replace(",", "x").replace(" ", "");
+                                refined_code = refined_code.replace(call_str, &fixed);
+                            }
+                        }
+                    }
+                }
                 let _ = std::fs::write(&main_file_path, &refined_code);
                 for f in project_files.iter_mut() {
                     if f.path == entry_rel {
